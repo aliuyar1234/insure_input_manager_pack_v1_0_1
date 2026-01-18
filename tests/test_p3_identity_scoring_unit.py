@@ -42,7 +42,7 @@ class TestP3IdentityScoringUnit(unittest.TestCase):
             "message_fingerprint": "sha256:" + ("1" * 64),
         }
 
-        result, _draft = resolver.resolve(normalized_message=nm, attachment_texts_c14n=[])
+        result, _draft, _evidence = resolver.resolve(normalized_message=nm, attachment_texts_c14n=[])
 
         self.assertEqual(result["status"], "IDENTITY_NEEDS_REVIEW")
         self.assertIsNone(result["selected_candidate"])
@@ -51,4 +51,3 @@ class TestP3IdentityScoringUnit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

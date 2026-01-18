@@ -15,7 +15,14 @@ class CaseRecord:
 
 
 class CaseAdapter:
-    def create_case(self, *, idempotency_key: str, queue_id: str, title: str) -> str:
+    def create_case(
+        self,
+        *,
+        idempotency_key: str,
+        queue_id: str,
+        title: str,
+        context: Optional[dict] = None,
+    ) -> str:
         raise NotImplementedError
 
     def update_case(self, *, idempotency_key: str, case_id: str, title: Optional[str] = None) -> None:
@@ -42,7 +49,14 @@ class InMemoryCaseAdapter(CaseAdapter):
     def get_case(self, case_id: str) -> CaseRecord:
         return self._cases[case_id]
 
-    def create_case(self, *, idempotency_key: str, queue_id: str, title: str) -> str:
+    def create_case(
+        self,
+        *,
+        idempotency_key: str,
+        queue_id: str,
+        title: str,
+        context: Optional[dict] = None,
+    ) -> str:
         existing = self._idempotency_index.get(idempotency_key)
         if existing is not None:
             return existing
@@ -79,4 +93,3 @@ class InMemoryCaseAdapter(CaseAdapter):
             return
         self._applied_keys.add(idempotency_key)
         self._cases[case_id].drafts.append(draft)
-

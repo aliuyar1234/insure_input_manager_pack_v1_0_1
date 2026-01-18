@@ -13,7 +13,7 @@ from ieim.pipeline.p5_case_adapter import CaseAdapterRunner
 
 
 class _FailingCaseAdapter(CaseAdapter):
-    def create_case(self, *, idempotency_key: str, queue_id: str, title: str) -> str:
+    def create_case(self, *, idempotency_key: str, queue_id: str, title: str, context: Optional[dict] = None) -> str:
         raise RuntimeError("case backend unavailable")
 
     def update_case(self, *, idempotency_key: str, case_id: str, title: Optional[str] = None) -> None:
@@ -35,6 +35,7 @@ class TestP5CaseAdapterIdempotency(unittest.TestCase):
         stage = CaseStage(adapter=adapter)
 
         nm = {
+            "message_id": "11111111-1111-1111-1111-111111111111",
             "message_fingerprint": "sha256:" + ("1" * 64),
             "raw_mime_uri": "raw_store/mime/sample.eml",
             "raw_mime_sha256": "sha256:" + ("2" * 64),

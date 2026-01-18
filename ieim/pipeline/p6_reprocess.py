@@ -244,7 +244,7 @@ class ReprocessRunner:
 
         attachment_texts_c14n = _load_attachment_texts_c14n(repo_root=self.repo_root, attachments=attachments)
         t_id0 = time.perf_counter()
-        identity, request_info = resolver.resolve(
+        identity, request_info, evidence = resolver.resolve(
             normalized_message=nm_reprocess, attachment_texts_c14n=attachment_texts_c14n
         )
         id_ms = int((time.perf_counter() - t_id0) * 1000)
@@ -276,7 +276,7 @@ class ReprocessRunner:
                 config_ref={"config_path": id_cfg.config_path, "config_sha256": id_cfg.config_sha256},
                 rules_ref=None,
                 model_info=None,
-                evidence=[],
+                evidence=evidence,
             )
         )
         obs_logger.append(

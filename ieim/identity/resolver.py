@@ -11,6 +11,7 @@ from typing import Optional
 from ieim.determinism.decision_hash import decision_hash
 from ieim.identity.adapters import CRMAdapter, ClaimsAdapter, PolicyAdapter
 from ieim.identity.config import IdentityConfig, SignalSpec
+from ieim.identity.identity_directory_client import IdentityDirectoryError
 from ieim.identity.extract import IdentifierHit, find_claim_number, find_policy_number
 from ieim.identity.request_info import load_request_info_template, render_request_info_draft
 from ieim.raw_store import sha256_prefixed
@@ -77,7 +78,7 @@ class IdentityResolver:
         *,
         normalized_message: dict,
         attachment_texts_c14n: Optional[list[str]] = None,
-    ) -> tuple[dict, Optional[str]]:
+    ) -> tuple[dict, Optional[str], list[dict]]:
         schema_id, schema_version = _identity_schema_id_and_version()
 
         message_id = str(normalized_message["message_id"])
@@ -98,6 +99,21 @@ class IdentityResolver:
                     break
 
         candidates: list[dict] = []
+        dependency_evidence: list[dict] = []
+
+        def record_dependency_failure(*, err: Exception) -> None:
+            snippet = f"{type(err).__name__}: {err}"
+            if len(snippet) > 400:
+                snippet = snippet[:400]
+            dependency_evidence.append(
+                {
+                    "source": "DEPENDENCY_ID_DIR",
+                    "start": 0,
+                    "end": 0,
+                    "snippet_redacted": snippet,
+                    "snippet_sha256": _snippet_sha256(snippet),
+                }
+            )
 
         def add_signal(
             *,
@@ -120,7 +136,11 @@ class IdentityResolver:
             out.append(payload)
 
         if claim_hit is not None:
-            record = self.claims_adapter.lookup_by_claim_number(claim_number=claim_hit.value)
+            try:
+                record = self.claims_adapter.lookup_by_claim_number(claim_number=claim_hit.value)
+            except IdentityDirectoryError as e:
+                record_dependency_failure(err=e)
+                record = None
             if record is not None:
                 signal_specs: list[SignalSpec] = []
                 signals: list[dict] = []
@@ -144,7 +164,11 @@ class IdentityResolver:
                 )
 
         if policy_hit is not None:
-            record = self.policy_adapter.lookup_by_policy_number(policy_number=policy_hit.value)
+            try:
+                record = self.policy_adapter.lookup_by_policy_number(policy_number=policy_hit.value)
+            except IdentityDirectoryError as e:
+                record_dependency_failure(err=e)
+                record = None
             if record is not None:
                 signal_specs = []
                 signals = []
@@ -158,7 +182,11 @@ class IdentityResolver:
                 sender_email = str(normalized_message.get("from_email") or "")
                 sender_email_signal = False
                 if sender_email:
-                    linked = set(self.crm_adapter.policy_numbers_for_sender_email(email=sender_email))
+                    try:
+                        linked = set(self.crm_adapter.policy_numbers_for_sender_email(email=sender_email))
+                    except IdentityDirectoryError as e:
+                        record_dependency_failure(err=e)
+                        linked = set()
                     if policy_hit.value in linked:
                         add_signal(
                             name="SIG_SENDER_EMAIL_MATCH",
@@ -233,6 +261,10 @@ class IdentityResolver:
                 selected_candidate = {k: v for k, v in selected_candidate.items() if not k.startswith("_")}
                 selected_candidate["rank"] = 1
 
+        if dependency_evidence:
+            status = "IDENTITY_NEEDS_REVIEW"
+            selected_candidate = None
+
         decision_input = {
             "system_id": self.config.system_id,
             "canonical_spec_semver": self.config.canonical_spec_semver,
@@ -298,4 +330,4 @@ class IdentityResolver:
             template = load_request_info_template(root_dir=root_dir, language=lang)
             request_info = render_request_info_draft(template=template)
 
-        return out, request_info
+        return out, request_info, dependency_evidence

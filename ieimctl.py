@@ -435,6 +435,292 @@ def cmd_demo_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ingest_simulate(args: argparse.Namespace) -> int:
+    repo_root = Path(__file__).resolve().parent
+    samples_dir = _resolve_repo_path(repo_root, args.samples)
+    out_dir = _resolve_repo_path(repo_root, args.out_dir)
+    adapter_name = str(args.adapter or "").strip().lower()
+
+    raw_mime_dir = samples_dir / "raw_mime"
+    attachments_dir = samples_dir / "attachments"
+    if not raw_mime_dir.exists():
+        print(f"INGEST_SIMULATE_FAILED: missing samples raw_mime dir: {raw_mime_dir}")
+        return 10
+    if not attachments_dir.exists():
+        print(f"INGEST_SIMULATE_FAILED: missing samples attachments dir: {attachments_dir}")
+        return 10
+
+    if adapter_name != "filesystem":
+        print(f"INGEST_SIMULATE_FAILED: unsupported adapter: {adapter_name}")
+        return 10
+
+    from datetime import timedelta
+
+    import jsonschema
+
+    from ieim.attachments.av import Sha256MappingAVScanner
+    from ieim.attachments.stage import AttachmentStage
+    from ieim.audit.file_audit_log import FileAuditLogger
+    from ieim.audit.verify import verify_audit_logs
+    from ieim.ingest.filesystem_adapter import FilesystemMailIngestAdapter
+    from ieim.pipeline.p1_ingest_normalize import IngestNormalizeRunner
+    from ieim.raw_store import FileRawStore
+
+    av_map: dict[str, str] = {}
+    for meta_path in sorted(attachments_dir.glob("*.meta.json")):
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if isinstance(meta, dict) and isinstance(meta.get("sha256"), str) and isinstance(meta.get("av_status"), str):
+            av_map[meta["sha256"]] = meta["av_status"]
+
+    adapter = FilesystemMailIngestAdapter(raw_mime_dir=raw_mime_dir, attachments_dir=attachments_dir)
+    store = FileRawStore(base_dir=out_dir)
+    audit_logger = FileAuditLogger(base_dir=out_dir)
+
+    attachment_stage = AttachmentStage(
+        adapter=adapter,
+        raw_store=store,
+        derived_store=store,
+        av_scanner=Sha256MappingAVScanner(av_map, default_status="FAILED"),
+        attachments_out_dir=out_dir / "attachments",
+    )
+
+    nm_schema = json.loads((repo_root / "schemas" / "normalized_message.schema.json").read_text("utf-8"))
+    nm_validator = jsonschema.Draft202012Validator(nm_schema)
+
+    runner = IngestNormalizeRunner(
+        adapter=adapter,
+        ingestion_source="M365_GRAPH",
+        raw_store=store,
+        state_dir=out_dir / "state",
+        normalized_out_dir=out_dir / "emails",
+        audit_logger=audit_logger,
+        attachment_stage=attachment_stage,
+        ingested_at_from_received_at=lambda received_at: received_at + timedelta(minutes=5),
+    )
+
+    try:
+        produced = runner.run_once(limit=int(args.limit))
+    except Exception as e:
+        print(f"INGEST_SIMULATE_FAILED: pipeline error: {type(e).__name__}: {e}")
+        return 60
+
+    for nm in produced:
+        nm_validator.validate(nm)
+
+    audit_dir = out_dir / "audit"
+    audit_schema_path = repo_root / "schemas" / "audit_event.schema.json"
+    audit_result = verify_audit_logs(audit_dir=audit_dir, schema_path=audit_schema_path)
+    if audit_result.files_checked == 0:
+        print(f"INGEST_SIMULATE_FAILED: no audit logs found in: {audit_dir}")
+        return 60
+    if not audit_result.ok:
+        print("INGEST_SIMULATE_FAILED: audit verify failed")
+        for err in audit_result.errors[:200]:
+            print(err)
+        return 60
+
+    print(
+        "INGEST_SIMULATE_OK:"
+        f" out_dir={out_dir.as_posix()}"
+        f" produced={len(produced)}"
+        f" audit_files={audit_result.files_checked}"
+        f" audit_events={audit_result.events_checked}"
+    )
+    return 0
+
+
+def cmd_case_simulate(args: argparse.Namespace) -> int:
+    repo_root = Path(__file__).resolve().parent
+    samples_dir = _resolve_repo_path(repo_root, args.samples)
+    normalized_dir = samples_dir / "emails"
+    attachments_dir = samples_dir / "attachments"
+    adapter_name = str(args.adapter or "").strip().lower()
+
+    if not normalized_dir.exists():
+        print(f"CASE_SIMULATE_FAILED: missing samples emails dir: {normalized_dir}")
+        return 10
+    if not attachments_dir.exists():
+        print(f"CASE_SIMULATE_FAILED: missing samples attachments dir: {attachments_dir}")
+        return 10
+
+    if adapter_name != "servicenow":
+        print(f"CASE_SIMULATE_FAILED: unsupported adapter: {adapter_name}")
+        return 10
+
+    cfg_path = _resolve_repo_path(repo_root, args.config)
+    try:
+        validate_config_file(path=cfg_path)
+    except Exception as e:
+        print(f"CASE_SIMULATE_FAILED: invalid config: {e}")
+        return 10
+
+    out_base_dir = _resolve_repo_path(repo_root, args.out_dir)
+    try:
+        run_dir = _next_demo_run_dir(base_dir=out_base_dir)
+    except Exception as e:
+        print(f"CASE_SIMULATE_FAILED: failed to create output dir: {e}")
+        return 60
+
+    from ieim.audit.file_audit_log import FileAuditLogger
+    from ieim.audit.verify import verify_audit_logs
+    from ieim.case_adapter.servicenow_adapter import (
+        ServiceNowIncidentAdapterConfig,
+        ServiceNowIncidentCaseAdapter,
+    )
+    from ieim.case_adapter.servicenow_mock import ServiceNowMockServer, ServiceNowMockState
+    from ieim.identity.adapters import InMemoryCRMAdapter, InMemoryClaimsAdapter, InMemoryPolicyAdapter
+    from ieim.pipeline.p3_identity_resolution import IdentityResolutionRunner
+    from ieim.pipeline.p4_classify_extract import ClassifyExtractRunner
+    from ieim.pipeline.p5_case_adapter import CaseAdapterRunner
+    from ieim.pipeline.p5_routing import RoutingRunner
+
+    audit_logger = FileAuditLogger(base_dir=run_dir)
+
+    policy_adapter = InMemoryPolicyAdapter(valid_policy_numbers=None)
+    claims_adapter = InMemoryClaimsAdapter(valid_claim_numbers=None)
+    crm_adapter = InMemoryCRMAdapter(email_to_policy_numbers={})
+
+    try:
+        _ = IdentityResolutionRunner(
+            repo_root=repo_root,
+            normalized_dir=normalized_dir,
+            attachments_dir=attachments_dir,
+            identity_out_dir=run_dir / "identity",
+            drafts_out_dir=run_dir / "drafts",
+            policy_adapter=policy_adapter,
+            claims_adapter=claims_adapter,
+            crm_adapter=crm_adapter,
+            audit_logger=audit_logger,
+            config_path_override=cfg_path,
+        ).run()
+
+        _ = ClassifyExtractRunner(
+            repo_root=repo_root,
+            normalized_dir=normalized_dir,
+            attachments_dir=attachments_dir,
+            classification_out_dir=run_dir / "classification",
+            extraction_out_dir=run_dir / "extraction",
+            audit_logger=audit_logger,
+            config_path_override=cfg_path,
+        ).run()
+
+        routing_results = RoutingRunner(
+            repo_root=repo_root,
+            normalized_dir=normalized_dir,
+            identity_dir=run_dir / "identity",
+            classification_dir=run_dir / "classification",
+            routing_out_dir=run_dir / "routing",
+            audit_logger=audit_logger,
+            config_path_override=cfg_path,
+        ).run()
+    except Exception as e:
+        print(f"CASE_SIMULATE_FAILED: upstream pipeline error: {type(e).__name__}: {e}")
+        return 60
+
+    import uuid
+
+    queue_ids: set[str] = set()
+    for r in routing_results:
+        qid = r.get("queue_id")
+        if isinstance(qid, str) and qid:
+            queue_ids.add(qid)
+    group_map = {qid: str(uuid.uuid5(uuid.NAMESPACE_URL, f"sn_group:{qid}")) for qid in sorted(queue_ids)}
+
+    def get_bytes(uri: str) -> bytes:
+        p = Path(uri)
+        path = p if p.is_absolute() else (repo_root / p)
+        return path.read_bytes()
+
+    sn_state = ServiceNowMockState(sys_users_by_email={"broker@example.broker": str(uuid.uuid4())})
+
+    with ServiceNowMockServer(state=sn_state) as sn:
+        if sn.base_url is None:
+            print("CASE_SIMULATE_FAILED: mock ServiceNow did not start")
+            return 60
+
+        adapter = ServiceNowIncidentCaseAdapter(
+            config=ServiceNowIncidentAdapterConfig(
+                instance_url=sn.base_url,
+                client_id="client_id",
+                client_secret="client_secret",
+                assignment_group_by_queue_id=group_map,
+                get_bytes=get_bytes,
+                attach_stage_outputs=True,
+            )
+        )
+
+        try:
+            results1 = CaseAdapterRunner(
+                repo_root=repo_root,
+                normalized_dir=normalized_dir,
+                attachments_dir=attachments_dir,
+                identity_dir=run_dir / "identity",
+                classification_dir=run_dir / "classification",
+                extraction_dir=run_dir / "extraction",
+                routing_dir=run_dir / "routing",
+                drafts_dir=run_dir / "drafts",
+                case_out_dir=run_dir / "case",
+                adapter=adapter,
+                audit_logger=audit_logger,
+            ).run()
+        except Exception as e:
+            print(f"CASE_SIMULATE_FAILED: case pipeline error: {type(e).__name__}: {e}")
+            return 60
+
+        incidents_before = sn_state.incident_count()
+        attachments_before = sn_state.attachment_count()
+
+        try:
+            _ = CaseAdapterRunner(
+                repo_root=repo_root,
+                normalized_dir=normalized_dir,
+                attachments_dir=attachments_dir,
+                identity_dir=run_dir / "identity",
+                classification_dir=run_dir / "classification",
+                extraction_dir=run_dir / "extraction",
+                routing_dir=run_dir / "routing",
+                drafts_dir=run_dir / "drafts",
+                case_out_dir=run_dir / "case",
+                adapter=adapter,
+                audit_logger=audit_logger,
+            ).run()
+        except Exception as e:
+            print(f"CASE_SIMULATE_FAILED: case re-run error: {type(e).__name__}: {e}")
+            return 60
+
+        if sn_state.incident_count() != incidents_before:
+            print("CASE_SIMULATE_FAILED: idempotency violation (incident count changed on replay)")
+            return 60
+        if sn_state.attachment_count() != attachments_before:
+            print("CASE_SIMULATE_FAILED: idempotency violation (attachments changed on replay)")
+            return 60
+
+        created = len([r for r in results1 if r.get("status") == "CREATED"])
+        if created <= 0 or sn_state.attachment_count() <= 0:
+            print("CASE_SIMULATE_FAILED: expected at least one created case with attachments")
+            return 60
+
+    audit_dir = run_dir / "audit"
+    schema_path = repo_root / "schemas" / "audit_event.schema.json"
+    audit_result = verify_audit_logs(audit_dir=audit_dir, schema_path=schema_path)
+    if audit_result.files_checked == 0 or not audit_result.ok:
+        print("CASE_SIMULATE_FAILED: audit verify failed")
+        for err in audit_result.errors[:200]:
+            print(err)
+        return 60
+
+    print(
+        "CASE_SIMULATE_OK:"
+        f" out_dir={run_dir.as_posix()}"
+        f" cases_created={created}"
+        f" incidents={sn_state.incident_count()}"
+        f" attachments={sn_state.attachment_count()}"
+        f" audit_files={audit_result.files_checked}"
+        f" audit_events={audit_result.events_checked}"
+    )
+    return 0
+
+
 def _load_corrections(path: Path) -> list[dict[str, Any]]:
     obj = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(obj, dict) and "corrections" in obj:
@@ -630,6 +916,50 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional JSON file mapping sender email to policy numbers.",
     )
     demo_run.set_defaults(func=cmd_demo_run)
+
+    ingest = sub.add_parser("ingest")
+    ingest_sub = ingest.add_subparsers(dest="ingest_command", required=True)
+
+    ingest_simulate = ingest_sub.add_parser("simulate")
+    ingest_simulate.add_argument(
+        "--adapter",
+        default="filesystem",
+        help="Ingest adapter (supported: filesystem).",
+    )
+    ingest_simulate.add_argument(
+        "--samples",
+        default="data/samples",
+        help="Sample corpus base directory (repo-relative unless absolute).",
+    )
+    ingest_simulate.add_argument(
+        "--out-dir",
+        default="out/ingest_sim",
+        help="Output base directory (repo-relative unless absolute).",
+    )
+    ingest_simulate.add_argument("--limit", default=500, help="Max messages per run.")
+    ingest_simulate.set_defaults(func=cmd_ingest_simulate)
+
+    case = sub.add_parser("case")
+    case_sub = case.add_subparsers(dest="case_command", required=True)
+
+    case_simulate = case_sub.add_parser("simulate")
+    case_simulate.add_argument(
+        "--adapter",
+        default="servicenow",
+        help="Case adapter (supported: servicenow).",
+    )
+    case_simulate.add_argument(
+        "--samples",
+        default="data/samples",
+        help="Sample corpus base directory (repo-relative unless absolute).",
+    )
+    case_simulate.add_argument(
+        "--out-dir",
+        default="out/case_sim",
+        help="Output base directory (repo-relative unless absolute).",
+    )
+    case_simulate.add_argument("--config", default="configs/dev.yaml", help="Config file (repo-relative).")
+    case_simulate.set_defaults(func=cmd_case_simulate)
 
     rules = sub.add_parser("rules")
     rules_sub = rules.add_subparsers(dest="rules_command", required=True)

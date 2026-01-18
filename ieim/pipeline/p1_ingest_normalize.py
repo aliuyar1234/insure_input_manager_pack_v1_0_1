@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from ieim.audit.file_audit_log import ArtifactRef, FileAuditLogger, build_audit_event
 from ieim.attachments.stage import AttachmentStage
@@ -50,6 +50,7 @@ class IngestNormalizeRunner:
     audit_logger: Optional[FileAuditLogger] = None
     obs_logger: Optional[FileObservabilityLogger] = None
     attachment_stage: Optional[AttachmentStage] = None
+    ingested_at_from_received_at: Optional[Callable[[datetime], datetime]] = None
 
     def _cursor_path(self) -> Path:
         return self.state_dir / "ingest_cursor.json"
@@ -77,7 +78,6 @@ class IngestNormalizeRunner:
         )
 
         produced: list[dict] = []
-        now = datetime.now(timezone.utc).replace(microsecond=0)
 
         for ref in refs:
             t_ingest0 = time.perf_counter()
@@ -92,6 +92,11 @@ class IngestNormalizeRunner:
             message_id = self._derive_message_id(source_message_id=ref.source_message_id)
             run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"run:{message_id}:{raw_sha}"))
             received_at = self.adapter.get_received_at(ref)
+            now = (
+                datetime.now(timezone.utc).replace(microsecond=0)
+                if self.ingested_at_from_received_at is None
+                else self.ingested_at_from_received_at(received_at).replace(microsecond=0)
+            )
 
             processed_attachments = []
             attachment_ids = []

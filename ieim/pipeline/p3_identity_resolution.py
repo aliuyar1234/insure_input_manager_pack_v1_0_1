@@ -80,7 +80,7 @@ class IdentityResolutionRunner:
                 crm_adapter=self.crm_adapter,
             )
             t0 = time.perf_counter()
-            result, request_info = resolver.resolve(
+            result, request_info, evidence = resolver.resolve(
                 normalized_message=nm, attachment_texts_c14n=attachment_texts_c14n
             )
             dur_ms = int((time.perf_counter() - t0) * 1000)
@@ -138,7 +138,7 @@ class IdentityResolutionRunner:
                         "config_path": config.config_path,
                         "config_sha256": config.config_sha256,
                     },
-                    evidence=[],
+                    evidence=evidence,
                 )
                 self.audit_logger.append(event)
 

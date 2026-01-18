@@ -267,6 +267,8 @@ If product line is PROD_UNKNOWN and intent implies claims or policy service, rou
 - CLI_BIN: `ieimctl`
 - CLI_COMMANDS:
   - `ieimctl pack verify`
+  - `ieimctl ingest simulate`
+  - `ieimctl case simulate`
   - `ieimctl rules lint`
   - `ieimctl rules simulate`
   - `ieimctl audit verify`

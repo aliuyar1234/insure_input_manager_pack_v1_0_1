@@ -176,11 +176,11 @@ Gate G-013 (PASSED):
 ## P13 - Production integrations (mail ingest and case adapter)
 
 Tasks:
-- T-057 Mail ingestion hardening (OPEN)
-- T-058 Case adapter first-class implementation (OPEN)
-- T-059 Generic REST identity directory adapter (conditional) (OPEN)
+- T-057 Mail ingestion hardening (DONE)
+- T-058 Case adapter first-class implementation (DONE)
+- T-059 Generic REST identity directory adapter (conditional) (DONE)
 
-Gate G-014 (NOT STARTED):
+Gate G-014 (PASSED):
 - Integration readiness (at least one real ingest + one real case adapter)
 
 ## P14 - Observability, backups, retention, and operator experience

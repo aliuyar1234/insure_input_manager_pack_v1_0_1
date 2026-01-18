@@ -138,7 +138,7 @@ def run_load_test(
                 crm_adapter=crm_adapter,
             )
             t_id0 = time.perf_counter()
-            identity_result, _draft = resolver.resolve(
+            identity_result, _draft, _evidence = resolver.resolve(
                 normalized_message=nm, attachment_texts_c14n=attachment_texts_c14n
             )
             stage_times["IDENTITY"].append((time.perf_counter() - t_id0) * 1000)

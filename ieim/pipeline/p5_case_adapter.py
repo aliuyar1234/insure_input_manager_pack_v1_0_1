@@ -55,6 +55,9 @@ class CaseAdapterRunner:
     adapter: CaseAdapter
     audit_logger: Optional[FileAuditLogger] = None
     obs_logger: Optional[FileObservabilityLogger] = None
+    identity_dir: Optional[Path] = None
+    classification_dir: Optional[Path] = None
+    extraction_dir: Optional[Path] = None
 
     def run(self) -> list[dict]:
         produced: list[dict] = []
@@ -81,6 +84,58 @@ class CaseAdapterRunner:
             )
             reply_draft = _load_optional_text(path=self.drafts_dir / f"{message_id}.reply.md")
 
+            identity = None
+            classification = None
+            extraction = None
+
+            if self.identity_dir is not None:
+                identity_path = self.identity_dir / f"{message_id}.identity.json"
+                if identity_path.exists():
+                    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+
+            if self.classification_dir is not None:
+                cls_path = self.classification_dir / f"{message_id}.classification.json"
+                if cls_path.exists():
+                    classification = json.loads(cls_path.read_text(encoding="utf-8"))
+
+            if self.extraction_dir is not None:
+                ext_path = self.extraction_dir / f"{message_id}.extraction.json"
+                if ext_path.exists():
+                    extraction = json.loads(ext_path.read_text(encoding="utf-8"))
+
+            audit_chain_head_sha256 = None
+            if self.audit_logger is not None:
+                audit_path = self.audit_logger.base_dir / "audit" / message_id / f"{run_id}.jsonl"
+                if audit_path.exists():
+                    events = []
+                    for line in audit_path.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            ev = json.loads(line)
+                        except Exception:
+                            continue
+                        if isinstance(ev, dict):
+                            events.append(ev)
+
+                    if events:
+                        first_case_idx = None
+                        for idx, ev in enumerate(events):
+                            if str(ev.get("stage") or "") == "CASE":
+                                first_case_idx = idx
+                                break
+                        head_ev = None
+                        if first_case_idx is None:
+                            head_ev = events[-1]
+                        elif first_case_idx > 0:
+                            head_ev = events[first_case_idx - 1]
+
+                        if head_ev is not None:
+                            h = head_ev.get("event_hash")
+                            if isinstance(h, str) and h:
+                                audit_chain_head_sha256 = h
+
             status = "SKIPPED"
             case_id = None
             blocked = False
@@ -94,6 +149,10 @@ class CaseAdapterRunner:
                     normalized_message=nm,
                     routing_decision=routing,
                     attachments=attachments,
+                    identity_result=identity,
+                    classification_result=classification,
+                    extraction_result=extraction,
+                    audit_chain_head_sha256=audit_chain_head_sha256,
                     request_info_draft=request_info_draft,
                     reply_draft=reply_draft,
                 )
@@ -165,6 +224,20 @@ class CaseAdapterRunner:
                     uri=out_path.name,
                     sha256=sha256_prefixed(out_bytes),
                 )
+                evidence = []
+                if error_type is not None and error_message is not None:
+                    snippet = f"{error_type}: {error_message}"
+                    if len(snippet) > 400:
+                        snippet = snippet[:400]
+                    evidence = [
+                        {
+                            "source": "CASE_ADAPTER_ERROR",
+                            "start": 0,
+                            "end": 0,
+                            "snippet_redacted": snippet,
+                            "snippet_sha256": sha256_prefixed(snippet.encode("utf-8")),
+                        }
+                    ]
                 event = build_audit_event(
                     message_id=message_id,
                     run_id=run_id,
@@ -177,7 +250,7 @@ class CaseAdapterRunner:
                     config_ref=None,
                     rules_ref=None,
                     model_info=None,
-                    evidence=[],
+                    evidence=evidence,
                 )
                 self.audit_logger.append(event)
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Callable, Iterable, Optional
 from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from ieim.ingest.adapter import AttachmentRef, MailIngestAdapter, MessageRef
@@ -28,9 +30,36 @@ RequestBytesFn = Callable[[str, dict[str, str]], bytes]
 
 
 def _default_request_bytes(url: str, headers: dict[str, str]) -> bytes:
-    req = Request(url, headers=headers, method="GET")
-    with urlopen(req, timeout=30) as resp:
-        return resp.read()
+    max_attempts = 4
+    base_backoff_s = 0.5
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            req = Request(url, headers=headers, method="GET")
+            with urlopen(req, timeout=30) as resp:
+                return resp.read()
+        except HTTPError as e:
+            status = int(getattr(e, "code", 0) or 0)
+            retryable = status in (429, 500, 502, 503, 504)
+            if not retryable or attempt >= max_attempts:
+                raise
+
+            retry_after = None
+            try:
+                retry_after = e.headers.get("Retry-After")
+            except Exception:
+                retry_after = None
+
+            sleep_s = base_backoff_s * (2 ** (attempt - 1))
+            if isinstance(retry_after, str) and retry_after.isdigit():
+                sleep_s = max(sleep_s, float(int(retry_after)))
+
+            time.sleep(min(sleep_s, 10.0))
+        except URLError:
+            if attempt >= max_attempts:
+                raise
+            sleep_s = base_backoff_s * (2 ** (attempt - 1))
+            time.sleep(min(sleep_s, 10.0))
 
 
 class M365GraphMailIngestAdapter(MailIngestAdapter):
