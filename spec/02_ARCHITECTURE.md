@@ -26,7 +26,7 @@ flowchart TB
   %% Intelligence gates
   subgraph S2["Identity + Intelligence Gates"]
     G --> K["Identity candidates + deterministic scoring"]
-    K --> L{ "LLM allowed?" }
+    K --> L{LLM allowed?}
     L -->|no / determinism| M["Rule + model classify"]
     L -->|yes| N["LLM classify (strict JSON)"]
     N --> O["LLM result cache (fingerprint)"]
@@ -42,7 +42,7 @@ flowchart TB
 
   %% Decisions + human loop
   subgraph S3["Routing + Human Review"]
-    U --> V{ "HITL required?" }
+    U --> V{HITL required?}
     V -->|yes| W["Review UI/API + corrections"]
     W --> U
     U -->|schemas/routing_decision.schema.json| X["Case/Ticket adapter (idempotent)"]
@@ -68,15 +68,15 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-  A["Any stage output"] --> B{ "Schema valid?" }
+  A["Any stage output"] --> B{Schema valid?}
   B -->|no| C["Fail-closed: route to HITL review"]
-  B -->|yes| D{ "Risk flag raised?" }
+  B -->|yes| D{Risk flag raised?}
   D -->|yes| C
-  D -->|no| E{ "Identity ambiguous?" }
+  D -->|no| E{Identity ambiguous?}
   E -->|yes| C
-  E -->|no| F{ "LLM output valid + above confidence?" }
+  E -->|no| F{LLM output valid + above confidence?}
   F -->|no| G["Fallback to deterministic rules"]
-  G --> H{ "Deterministic confidence high?" }
+  G --> H{Deterministic confidence high?}
   H -->|no| C
   H -->|yes| I["Proceed to routing"]
   F -->|yes| I
