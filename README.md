@@ -5,6 +5,48 @@ Intake Routing Engine is an **open-source, self-hosted email intake and routing 
 It turns inbound emails (including attachments) into **auditable, deterministic operational outcomes**:
 ingest -> normalize -> attachment processing -> identity resolution -> classify/extract -> deterministic routing -> case/ticket actions -> HITL review (when needed) -> immutable audit log.
 
+## Workflow (end-to-end)
+
+Below is the concrete pipeline flow and what each stage produces. All stages emit append-only audit events.
+
+1) Ingest
+- Pulls email from M365 Graph, IMAP, or SMTP gateway.
+- Stores raw MIME and attachments in append-only storage.
+- Emits an audit event with raw artifact references and hashes.
+
+2) Normalize
+- Parses MIME into a schema-valid NormalizedMessage (subject/body/headers/threads).
+- Canonicalizes text and detects language.
+- Fails closed to review if parsing or schema validation fails.
+
+3) Attachment processing
+- AV scans and file type detection.
+- Extracts text and runs OCR when needed.
+- Stores derived text artifacts immutably with hashes.
+- If malware is detected, routing is blocked and sent to security review.
+
+4) Identity resolution
+- Retrieves candidates via policy/claim/customer lookups.
+- Scores candidates deterministically; selects only when thresholds and margins are met.
+- If uncertain, status is NEEDS_REVIEW and a request-for-info draft is generated.
+
+5) Classification and extraction
+- Produces intents, product line, urgency, and risk flags, plus entities with evidence spans.
+- LLM-first is supported but gated; invalid output fails closed.
+- Deterministic rules and gates remain authoritative for high-impact risks.
+
+6) Routing
+- Applies deterministic routing rules with hard risk overrides first.
+- If no rule matches or identity/product is unknown, routes to review.
+
+7) Case/ticket or HITL
+- Creates/updates cases and attaches originals when allowed.
+- Otherwise routes to HITL review with evidence and draft suggestions.
+
+8) Audit
+- Every stage emits an AuditEvent with hashes, versions, and evidence spans.
+- Audit logs are append-only and hash-chained for tamper detection.
+
 ## What you get
 
 - Production-ready pipeline services (API, worker, scheduler) with fail-closed defaults.
