@@ -59,13 +59,13 @@ This is not a hosted SaaS. You deploy it in your own environment (Compose or Kub
 
 ## Architecture
 
-High-level pipeline and integration boundaries:
+High-level pipeline, stores, and integration boundaries:
 
 ```mermaid
 flowchart LR
-  A["Mail Ingestion"] --> B["Raw Store (immutable)"]
+  A["Mail Ingestion (M365/IMAP/SMTP)"] --> B["Raw Store (immutable)"]
   B --> C["Normalize"]
-  C --> D["Attachment Processing"]
+  C --> D["Attachment Processing (AV/OCR)"]
   D --> E["Identity Resolution"]
   E --> F["Classification (rules/model/LLM gated)"]
   F --> G["Extraction"]
@@ -74,6 +74,10 @@ flowchart LR
   H --> J["HITL Gate"]
   J -->|review| K["Review UI/API"]
   K --> H
+
+  B --> S1["Derived Store (text artifacts)"]
+  C --> S2["Normalized DB"]
+
   C --> L["Audit Store (hash chain)"]
   D --> L
   E --> L
@@ -82,9 +86,65 @@ flowchart LR
   H --> L
   I --> L
   K --> L
+
+  R1["Rules Registry"] --> H
+  R2["Identity Directory/CRM"] --> E
+  R3["Policy/Claims Systems"] --> E
 ```
 
 Details: `spec/02_ARCHITECTURE.md`
+
+## Components (what runs where)
+
+- API service: ingestion endpoints, review API, and operational control plane.
+- Worker service: pipeline stages (normalize, attachments, identity, classify/extract, route).
+- Scheduler: retention jobs, audit verification, and replay tasks.
+- Stores: raw object storage, derived text store, normalized DB, audit log with hash chain.
+- Adapters: mail ingest, identity directory, case/ticket system, optional DMS/ECM.
+
+## Runtime view (services and data flows)
+
+```mermaid
+flowchart LR
+  subgraph Ingress
+    M[Mail Source]
+    M --> API[API Service]
+  end
+
+  subgraph Processing
+    API --> Q[Work Queue]
+    Q --> W[Worker Service]
+    S[Scheduler] --> W
+  end
+
+  subgraph Stores
+    R[Raw Store]
+    D[Derived Text Store]
+    N[Normalized DB]
+    A[Audit Store]
+  end
+
+  subgraph Integrations
+    ID[Identity Directory/CRM]
+    PC[Policy/Claims Systems]
+    CS[Case/Ticket System]
+  end
+
+  W --> R
+  W --> D
+  W --> N
+  W --> A
+  W --> ID
+  W --> PC
+  W --> CS
+```
+
+## Security and audit (controls overlay)
+
+- Fail-closed routing on ambiguity or invalid LLM output.
+- Append-only raw and audit stores with hash-chain verification.
+- Deterministic replay with pinned artifacts and config hashes.
+- LLM gating with strict JSON contracts, label validation, and confidence thresholds.
 
 ## Quickstart
 
